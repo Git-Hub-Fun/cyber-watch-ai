@@ -1,91 +1,89 @@
 #!/usr/bin/env python3
-"""Free cloud Cyber Watch: RSS/CISA KEV monitor with Telegram delivery."""
-import os, json, re, sqlite3, urllib.request, urllib.parse, csv, io, html, datetime, time
+"""Cyber Watch AI cloud RSS/CVE monitor. Safe, read-only intelligence collection."""
+import os,json,re,sqlite3,urllib.request,urllib.parse,html,datetime
 from xml.etree import ElementTree as ET
-
-DB=os.getenv('DB_PATH','state.db'); OUT='docs/index.html'; MAX=int(os.getenv('MAX_ITEMS','50'))
+DB=os.getenv('DB_PATH','state.db'); OUT='docs/index.html'; MAX=int(os.getenv('MAX_ITEMS','300'))
 FEEDS=[
- ('CISA advisories','https://www.cisa.gov/news-events/cybersecurity-advisories.xml',5),
- ('CISA news','https://www.cisa.gov/news.xml',3),
- ('BleepingComputer','https://www.bleepingcomputer.com/feed/',3),
- ('The Hacker News','https://feeds.feedburner.com/TheHackersNews',3),
- ('Krebs on Security','https://krebsonsecurity.com/feed/',3),
- ('SANS ISC','https://isc.sans.edu/rssfeed.xml',3),
- ('Google Security Blog','https://security.googleblog.com/feeds/posts/default?alt=rss',3),
- ('Microsoft Security Blog','https://www.microsoft.com/en-us/security/blog/feed/',3),
- ('Cisco Security','https://sec.cloudapps.cisco.com/security/center/rss.x',4),
- ('Ubuntu Security','https://ubuntu.com/security/notices/rss.xml',3),
+ ('CISA','CISA advisories','https://www.cisa.gov/news-events/cybersecurity-advisories.xml',5),
+ ('BleepingComputer','BleepingComputer','https://www.bleepingcomputer.com/feed/',4),
+ ('The Hacker News','The Hacker News','https://feeds.feedburner.com/TheHackersNews',4),
+ ('Krebs on Security','Krebs on Security','https://krebsonsecurity.com/feed/',3),
+ ('SANS ISC','SANS ISC','https://isc.sans.edu/rssfeed.xml',4),
+ ('Google Security Blog','Google Security Blog','https://security.googleblog.com/feeds/posts/default?alt=rss',3),
+ ('Microsoft Security Blog','Microsoft Security Blog','https://www.microsoft.com/en-us/security/blog/feed/',4),
+ ('Cisco Security','Cisco Security','https://sec.cloudapps.cisco.com/security/center/rss.x',4),
+ ('Exploit-DB','Exploit-DB','https://www.exploit-db.com/rss.xml',4),
+ ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/','3'),
+ ('NVD','NVD CVE feed','https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss.xml',5),
 ]
-KEYS={'critical':['actively exploited','zero-day','0-day','remote code execution','rce','critical','kev','known exploited','ransomware'],'high':['exploit','vulnerability','cve-','security advisory','breach','malware','phishing']}
-def score(text, weight):
- t=text.lower(); s=weight
- if any(k in t for k in KEYS['critical']): s+=5
- if any(k in t for k in KEYS['high']): s+=2
- cves=re.findall(r'CVE-\d{4}-\d{4,7}',t.upper()); s+=min(len(cves),3)
- return min(s,10),cves
-def fetch(url,timeout=15):
- req=urllib.request.Request(url,headers={'User-Agent':'CyberWatchAI/1.0 (security feed monitor)'})
+CRIT=['actively exploited','zero-day','zero day','0-day','remote code execution','rce','critical','known exploited','ransomware']
+HIGH=['exploit','vulnerability','cve-','security advisory','breach','malware','phishing']
+def score(text,w):
+ t=text.lower(); s=int(w)
+ if any(k in t for k in CRIT):s+=5
+ if any(k in t for k in HIGH):s+=2
+ cves=re.findall(r'CVE-\d{4}-\d{4,7}',text.upper()); s+=min(len(set(cves)),3)
+ return min(s,10),','.join(sorted(set(cves)))
+def fetch(url,timeout=20):
+ req=urllib.request.Request(url,headers={'User-Agent':'CyberWatchAI/2.0 (RSS threat monitoring)'})
  with urllib.request.urlopen(req,timeout=timeout) as r:return r.read()
 def init():
- db=sqlite3.connect(DB); db.execute('CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, title TEXT, url TEXT, source TEXT, published TEXT, score INTEGER, cves TEXT, summary TEXT)'); db.commit(); return db
-def parse_feed(name,url,w):
+ db=sqlite3.connect(DB); db.execute('CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY,title TEXT,url TEXT,source TEXT,published TEXT,score INTEGER,cves TEXT,summary TEXT)');db.commit();return db
+def parse_feed(tab,name,url,w):
  try:
-  root=ET.fromstring(fetch(url)); entries=root.findall('.//item')
-  if not entries: entries=root.findall('.//{http://www.w3.org/2005/Atom}entry')
-  out=[]
-  for e in entries[:40]:
+  root=ET.fromstring(fetch(url)); entries=root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry'); out=[]
+  for e in entries[:80]:
    def get(tag):
     x=e.find(tag) or e.find('{http://www.w3.org/2005/Atom}'+tag)
     return (x.text or '').strip() if x is not None and x.text else ''
    title=get('title'); link=get('link')
    if not link:
-    x=e.find('{http://www.w3.org/2005/Atom}link'); link=x.get('href','') if x is not None else ''
+    x=e.find('{http://www.w3.org/2005/Atom}link');link=x.get('href','') if x is not None else ''
    desc=get('description') or get('summary') or get('content')
-   desc=re.sub('<[^>]+>',' ',desc); desc=html.unescape(re.sub(r'\s+',' ',desc))[:500]
-   published=get('pubDate') or get('published') or get('updated')
+   desc=html.unescape(re.sub(r'<[^>]+>',' ',desc));desc=re.sub(r'\s+',' ',desc)[:600]
+   pub=get('pubDate') or get('published') or get('updated')
    if title and link:
-    s,cves=score(title+' '+desc,w); ident=link.strip()
-    out.append((ident,title,link,name,published,s,','.join(cves),desc))
+    s,cves=score(title+' '+desc,w);out.append((link.strip(),title,link,name,pub,s,cves,desc))
   return out
- except Exception as ex: print(f'Feed failure {name}: {ex}'); return []
+ except Exception as ex:print('Feed failure',name,str(ex)[:200]);return []
 def kev_feed():
- url='https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
  try:
-  data=json.loads(fetch(url)); out=[]
+  data=json.loads(fetch('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'));out=[]
   for v in data.get('vulnerabilities',[]):
-   cve=v.get('cveID',''); title=f"{cve} — {v.get('vendorProject','')} {v.get('product','')}: {v.get('vulnerabilityName','')}"
-   desc=f"Known exploited vulnerability. Due date: {v.get('dueDate','n/a')}. Required action: {v.get('requiredAction','')}"
-   link='https://www.cisa.gov/known-exploited-vulnerabilities-catalog'
-   out.append((cve,title,link,'CISA KEV',v.get('dateAdded',''),10,cve,desc))
+   cve=v.get('cveID','');title=f"{cve} — {v.get('vendorProject','')} {v.get('product','')}: {v.get('vulnerabilityName','')}";desc=f"Known exploited vulnerability. Added: {v.get('dateAdded','')}. Due date: {v.get('dueDate','n/a')}. Action: {v.get('requiredAction','')}"
+   out.append((cve,title,'https://www.cisa.gov/known-exploited-vulnerabilities-catalog','CISA KEV',v.get('dateAdded',''),10,cve,desc))
   return out
- except Exception as e: print('KEV error:',e); return []
+ except Exception as e:print('KEV error',e);return []
 def telegram(msg):
- token=os.getenv('TELEGRAM_BOT_TOKEN'); chat=os.getenv('TELEGRAM_CHAT_ID')
+ token=os.getenv('TELEGRAM_BOT_TOKEN');chat=os.getenv('TELEGRAM_CHAT_ID')
  if not token or not chat:return
- url='https://api.telegram.org/bot'+token+'/sendMessage'
- data=urllib.parse.urlencode({'chat_id':chat,'text':msg,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode()
- urllib.request.urlopen(urllib.request.Request(url,data=data),timeout=20).read()
-def esc(x): return html.escape(str(x or ''),quote=False)
+ data=urllib.parse.urlencode({'chat_id':chat,'text':msg,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode();urllib.request.urlopen(urllib.request.Request('https://api.telegram.org/bot'+token+'/sendMessage',data=data),timeout=20).read()
+def esc(x):return html.escape(str(x or ''),quote=True)
 def main():
- db=init(); feeds=[]
- for n,u,w in FEEDS: feeds+=parse_feed(n,u,w)
- feeds+=kev_feed(); new=[]
- for item in feeds:
-  try:
-   db.execute('INSERT INTO seen VALUES (?,?,?,?,?,?,?,?)',item); new.append(item)
-  except sqlite3.IntegrityError: pass
- db.commit(); db.close()
- # Build snapshot from all stored entries
- db=sqlite3.connect(DB); rows=db.execute('SELECT id,title,url,source,published,score,cves,summary FROM seen ORDER BY score DESC').fetchall(); db.close()
- rows=rows[:MAX]; new.sort(key=lambda x:x[5],reverse=True)
+ db=init(); items=[]
+ for tab,name,url,w in FEEDS:items+=parse_feed(tab,name,url,w)
+ items+=kev_feed();new=[]
+ for item in items:
+  try:db.execute('INSERT INTO seen VALUES (?,?,?,?,?,?,?,?)',item);new.append(item)
+  except sqlite3.IntegrityError:pass
+ db.commit();rows=db.execute('SELECT id,title,url,source,published,score,cves,summary FROM seen ORDER BY score DESC,published DESC').fetchall();db.close();rows=rows[:MAX];new.sort(key=lambda x:x[5],reverse=True)
  os.makedirs('docs',exist_ok=True)
- cards=''.join(f'<article><div class="meta"><span class="pill">{esc(r[3])}</span><span class="score">Priority {r[5]}/10</span></div><h2>{esc(r[1])}</h2><p>{esc(r[7])}</p><small>{esc(r[4])} · {esc(r[6])}</small><p><a href="{esc(r[2])}" target="_blank" rel="noopener">Open source ↗</a></p></article>' for r in rows)
- htmlpage=f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Cyber Watch AI</title><style>body{{margin:0;background:#0b1220;color:#e8eef8;font-family:system-ui;max-width:1100px;margin:auto;padding:24px}}header{{padding:28px;background:#14233b;border-radius:16px}}h1{{margin:0}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:20px}}article{{background:#111d30;border:1px solid #263a57;padding:18px;border-radius:14px}}.meta{{display:flex;justify-content:space-between}}.pill{{background:#193d5c;padding:4px 9px;border-radius:20px}}.score{{color:#fbbf24}}a{{color:#7dd3fc}}small{{color:#9fb1c8}}p{{line-height:1.5}}.foot{{color:#90a4bd;margin-top:20px}}</style></head><body><header><h1>🛡️ Cyber Watch AI</h1><p>Open-source threat intelligence digest · Updated {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p><p>{len(rows)} tracked items · {len(new)} new items this run</p></header><main class="grid">{cards}</main><p class="foot">Automated feed monitor. Priority is heuristic, not a formal severity rating. Verify details with the linked source.</p></body></html>'''
- open(OUT,'w',encoding='utf-8').write(htmlpage)
+ tabs=['All Intelligence','CISA','CISA KEV','NVD','BleepingComputer','The Hacker News','Krebs on Security','SANS ISC','Google Security Blog','Microsoft Security Blog','Cisco Security','Exploit-DB','Packet Storm']
+ cardhtml=[]
+ for r in rows:
+  source=r[3];tab='CISA KEV' if source=='CISA KEV' else ('NVD' if source=='NVD CVE feed' else source)
+  cardhtml.append(f'<article data-source="{esc(tab)}" data-score="{r[5]}"><div class="meta"><span class="pill">{esc(source)}</span><span class="score">Priority {r[5]}/10</span></div><h2>{esc(r[1])}</h2><p>{esc(r[7])}</p><small>{esc(r[4])} · {esc(r[6])}</small><p><a href="{esc(r[2])}" target="_blank" rel="noopener">Open source ↗</a></p></article>')
+ source_links={'CISA':'https://www.cisa.gov/news-events/cybersecurity-advisories','CISA KEV':'https://www.cisa.gov/known-exploited-vulnerabilities-catalog','NVD':'https://nvd.nist.gov/vuln/search','BleepingComputer':'https://www.bleepingcomputer.com/','The Hacker News':'https://thehackernews.com/','Krebs on Security':'https://krebsonsecurity.com/','SANS ISC':'https://isc.sans.edu/','Google Security Blog':'https://security.googleblog.com/','Microsoft Security Blog':'https://www.microsoft.com/en-us/security/blog/','Cisco Security':'https://sec.cloudapps.cisco.com/security/center/','Exploit-DB':'https://www.exploit-db.com/','Packet Storm':'https://packetstormsecurity.com/'}
+ nav=''.join(f'<button class="tab" data-tab="{esc(t)}">{esc(t)}</button>' for t in tabs)
+ links=''.join(f'<a href="{u}" target="_blank" rel="noopener">{esc(s)} ↗</a>' for s,u in source_links.items())
+ stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+ page=f'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cyber Watch AI | Threat Intelligence</title><style>
+:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{margin:0;background:#07111f;color:#e7edf7;font-family:Inter,system-ui,Segoe UI,sans-serif}}header{{padding:36px max(22px,calc((100vw - 1200px)/2));background:radial-gradient(ellipse at top right,#123a58,#0c1a2b 60%);border-bottom:1px solid #1c3852}}h1{{font-size:clamp(28px,4vw,40px);margin:0}}header p{{color:#9eb3ca}}.stats{{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}}.stat{{background:#10263c;border:1px solid #244660;border-radius:12px;padding:12px 18px}}.stat strong{{font-size:20px;display:block}}main{{max-width:1200px;margin:auto;padding:24px}}.tabs{{display:flex;gap:8px;overflow:auto;padding:8px 0 14px}}button{{cursor:pointer;color:#c9d9ea;background:#102238;border:1px solid #28435e;border-radius:10px;padding:10px 14px;white-space:nowrap}}button.active{{background:#1476a7;color:white;border-color:#3cb7e9}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}}article{{background:#0e1d30;border:1px solid #213750;padding:18px;border-radius:14px}}.meta{{display:flex;justify-content:space-between;gap:8px}}.pill{{background:#193d5c;padding:4px 9px;border-radius:20px;font-size:12px}}.score{{color:#fbbf24}}a{{color:#7dd3fc}}small,.muted{{color:#9fb1c8}}p{{line-height:1.55}}.sources{{display:flex;flex-wrap:wrap;gap:12px;margin:22px 0}}.sources a{{font-size:13px}}.foot{{color:#90a4bd;margin:26px 0}}.empty{{padding:40px;color:#9eb3ca}}.critical{{color:#fb7185}}
+</style></head><body><header><h1>🛡️ Cyber Watch AI</h1><p>Free cloud threat intelligence · Automated monitoring · Read-only collection</p><div class="stats"><div class="stat"><strong>{len(rows)}</strong><span>Tracked items</span></div><div class="stat"><strong>{len(new)}</strong><span>New this run</span></div><div class="stat"><strong>{stamp}</strong><span>Last update</span></div></div></header><main><h2>Intelligence sources</h2><div class="sources">{links}</div><h2>Threat intelligence feed</h2><div class="tabs">{nav}</div><div class="grid" id="feed">{''.join(cardhtml)}</div><div class="empty" id="empty" hidden>No records currently shown for this source.</div><p class="foot">Priority is a heuristic, not a CVSS score. Validate issues against original vendor and vulnerability sources. This public dashboard contains public feed data only.</p></main><script>const cards=[...document.querySelectorAll('article')],tabs=[...document.querySelectorAll('.tab')],empty=document.getElementById('empty');function filter(t){{tabs.forEach(b=>b.classList.toggle('active',b.dataset.tab===t));let n=0;cards.forEach(c=>{{let ok=t==='All Intelligence'||c.dataset.source===t;c.hidden=!ok;if(ok)n++}});empty.hidden=n>0}}tabs.forEach(b=>b.addEventListener('click',()=>filter(b.dataset.tab)));filter('All Intelligence');</script></body></html>'''
+ open(OUT,'w',encoding='utf-8').write(page)
  if new:
-  top=new[:12]; lines=['<b>🛡️ Cyber Watch AI — New intelligence</b>']
-  for r in top: lines.append(f"\n<b>[{r[5]}/10] {esc(r[1])[:180]}</b>\n{esc(r[3])} · CVEs: {esc(r[6] or 'none detected')}\n<a href='{esc(r[2])}'>Source</a>")
-  msg='\n'.join(lines)
-  for chunk in [msg[i:i+3800] for i in range(0,len(msg),3800)]: telegram(chunk)
- print(f'Run complete: {len(new)} new items, {len(rows)} dashboard records')
+  lines=['<b>🛡️ Cyber Watch AI — New intelligence</b>']
+  for r in new[:10]:lines.append(f"\n<b>[{r[5]}/10] {esc(r[1])[:170]}</b>\n{esc(r[3])} · CVEs: {esc(r[6] or 'none detected')}\n<a href='{esc(r[2])}'>Source</a>")
+  telegram('\n'.join(lines)[:4000])
+ print(f'Run complete: {len(new)} new items; {len(rows)} records')
 if __name__=='__main__':main()
