@@ -1,4 +1,4 @@
-# Cyber Watch AI — Free Cloud Edition
+# Cyber Watch AI - Free Cloud Edition
 
 Runs as a scheduled GitHub Actions workflow (every four hours by default). Monitors public security feeds + CISA Known Exploited Vulnerabilities catalog, scores items using transparent keyword heuristics, deduplicates using a SQLite database cached between workflow runs, sends new-item Telegram notifications (optional), and publishes a simple static dashboard snapshot in `docs/index.html`.
 
