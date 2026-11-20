@@ -11,9 +11,9 @@ FEEDS=[
  ('SANS ISC','SANS ISC','https://isc.sans.edu/rssfeed.xml',4),
  ('Google Security Blog','Google Security Blog','https://security.googleblog.com/feeds/posts/default?alt=rss',3),
  ('Microsoft Security Blog','Microsoft Security Blog','https://www.microsoft.com/en-us/security/blog/feed/',4),
- ('Cisco Security','Cisco Security','https://sec.cloudapps.cisco.com/security/center/rss.x',4),
+ ('Cisco Security','Cisco Security','https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml',4),
  ('Exploit-DB','Exploit-DB','https://www.exploit-db.com/rss.xml',4),
- ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/',3),
+ ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/','3'),
  ('NVD','NVD CVE feed','https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss.xml',5),
 ]
 CRIT=['actively exploited','zero-day','zero day','0-day','remote code execution','rce','critical','known exploited','ransomware']
@@ -31,31 +31,55 @@ def init():
  db=sqlite3.connect(DB); db.execute('CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY,title TEXT,url TEXT,source TEXT,published TEXT,score INTEGER,cves TEXT,summary TEXT)');db.commit();return db
 def parse_feed(tab,name,url,w):
  try:
-  root=ET.fromstring(fetch(url))
-  # RSS uses item; Atom uses entry. Match by local element name to tolerate namespaces.
-  entries=[e for e in root.iter() if e.tag.split('}')[-1] in ('item','entry')]
-  out=[]
+  root=ET.fromstring(fetch(url)); entries=[e for e in root.iter() if e.tag.split('}')[-1].lower() in ('item','entry')]; out=[]
   for e in entries[:80]:
    def get(*tags):
-    for child in e.iter():
-     local=child.tag.split('}')[-1]
-     if local in tags and child is not e:
+    # Only inspect direct entry children, avoiding nested content accidentally matching fields.
+    for child in list(e):
+     local=child.tag.split('}')[-1].lower()
+     if local in [t.lower() for t in tags]:
       if child.text and child.text.strip(): return child.text.strip()
       href=child.get('href')
       if href: return href.strip()
-     # RSS guid/link can be plain text; Atom links have href
+      # RSS link can be a child-less element with text handled above.
+      for sub in list(child):
+       if sub.text and sub.text.strip():return sub.text.strip()
+    # Atom links often carry href; content/summary may be nested HTML.
+    for child in list(e):
+     local=child.tag.split('}')[-1].lower()
+     if local in [t.lower() for t in tags]:
+      if child.get('href'):return child.get('href').strip()
+      textbits=' '.join(x.strip() for x in child.itertext() if x and x.strip())
+      if textbits:return textbits
     return ''
-   title=get('title')
-   link=get('link','guid')
+   title=get('title'); link=get('link','guid')
+   # Prefer Atom alternate link when present; fall back to guid/link text.
+   for child in list(e):
+    if child.tag.split('}')[-1].lower()=='link' and child.get('href') and child.get('rel','alternate')=='alternate':
+     link=child.get('href');break
    desc=get('description','summary','content','encoded')
-   desc=html.unescape(re.sub(r'<[^>]+>',' ',desc));desc=re.sub(r'\\s+',' ',desc)[:600]
+   desc=html.unescape(re.sub(r'<[^>]+>',' ',desc));desc=re.sub(r'\s+',' ',desc)[:600]
    pub=get('pubDate','published','updated','date')
    if title and link:
-    s,cves=score(title+' '+desc,w)
-    out.append((link.strip(),title,link.strip(),tab,pub,s,cves,desc))
+    s,cves=score(title+' '+desc,w);out.append((link.strip(),title,link.strip(),tab,pub,s,cves,desc))
+  print(f'Feed OK: {name} — {len(out)} entries')
   return out
- except Exception as ex:
-  print('Feed failure',name,str(ex)[:200]);return []
+ except Exception as ex:print('Feed failure',name,str(ex)[:200]);return []
+
+def nvd_feed():
+ try:
+  end=datetime.datetime.now(datetime.timezone.utc); start=end-datetime.timedelta(days=7)
+  fmt=lambda d:d.strftime('%Y-%m-%dT%H:%M:%S.000')
+  url='https://services.nvd.nist.gov/rest/json/cves/2.0?pubStartDate='+urllib.parse.quote(fmt(start))+'&pubEndDate='+urllib.parse.quote(fmt(end))+'&resultsPerPage=100'
+  data=json.loads(fetch(url,timeout=30));out=[]
+  for v in data.get('vulnerabilities',[]):
+   c=v.get('cve',{});cid=c.get('id',''); desc=' '.join(x.get('value','') for x in c.get('descriptions',[]) if x.get('lang')=='en')
+   title=cid+' — '+(desc[:250] or 'New NVD CVE record');link='https://nvd.nist.gov/vuln/detail/'+cid
+   if cid: s,cves=score(title,5);out.append((link,title,link,'NVD CVE feed',c.get('published',''),s,cid,desc[:600]))
+  print(f'Feed OK: NVD — {len(out)} entries')
+  return out
+ except Exception as ex:print('Feed failure NVD',str(ex)[:200]);return []
+
 def kev_feed():
  try:
   data=json.loads(fetch('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'));out=[]
@@ -71,8 +95,9 @@ def telegram(msg):
 def esc(x):return html.escape(str(x or ''),quote=True)
 def main():
  db=init(); items=[]
- for tab,name,url,w in FEEDS:items+=parse_feed(tab,name,url,w)
- items+=kev_feed();new=[]
+ for tab,name,url,w in FEEDS:
+  if tab!='NVD':items+=parse_feed(tab,name,url,w)
+ items+=nvd_feed();items+=kev_feed();new=[]
  for item in items:
   try:db.execute('INSERT INTO seen VALUES (?,?,?,?,?,?,?,?)',item);new.append(item)
   except sqlite3.IntegrityError:pass
