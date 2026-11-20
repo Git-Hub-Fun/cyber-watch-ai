@@ -13,7 +13,7 @@ FEEDS=[
  ('Microsoft Security Blog','Microsoft Security Blog','https://www.microsoft.com/en-us/security/blog/feed/',4),
  ('Cisco Security','Cisco Security','https://sec.cloudapps.cisco.com/security/center/rss.x',4),
  ('Exploit-DB','Exploit-DB','https://www.exploit-db.com/rss.xml',4),
- ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/','3'),
+ ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/',3),
  ('NVD','NVD CVE feed','https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss.xml',5),
 ]
 CRIT=['actively exploited','zero-day','zero day','0-day','remote code execution','rce','critical','known exploited','ransomware']
@@ -31,21 +31,31 @@ def init():
  db=sqlite3.connect(DB); db.execute('CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY,title TEXT,url TEXT,source TEXT,published TEXT,score INTEGER,cves TEXT,summary TEXT)');db.commit();return db
 def parse_feed(tab,name,url,w):
  try:
-  root=ET.fromstring(fetch(url)); entries=root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry'); out=[]
+  root=ET.fromstring(fetch(url))
+  # RSS uses item; Atom uses entry. Match by local element name to tolerate namespaces.
+  entries=[e for e in root.iter() if e.tag.split('}')[-1] in ('item','entry')]
+  out=[]
   for e in entries[:80]:
-   def get(tag):
-    x=e.find(tag) or e.find('{http://www.w3.org/2005/Atom}'+tag)
-    return (x.text or '').strip() if x is not None and x.text else ''
-   title=get('title'); link=get('link')
-   if not link:
-    x=e.find('{http://www.w3.org/2005/Atom}link');link=x.get('href','') if x is not None else ''
-   desc=get('description') or get('summary') or get('content')
-   desc=html.unescape(re.sub(r'<[^>]+>',' ',desc));desc=re.sub(r'\s+',' ',desc)[:600]
-   pub=get('pubDate') or get('published') or get('updated')
+   def get(*tags):
+    for child in e.iter():
+     local=child.tag.split('}')[-1]
+     if local in tags and child is not e:
+      if child.text and child.text.strip(): return child.text.strip()
+      href=child.get('href')
+      if href: return href.strip()
+     # RSS guid/link can be plain text; Atom links have href
+    return ''
+   title=get('title')
+   link=get('link','guid')
+   desc=get('description','summary','content','encoded')
+   desc=html.unescape(re.sub(r'<[^>]+>',' ',desc));desc=re.sub(r'\\s+',' ',desc)[:600]
+   pub=get('pubDate','published','updated','date')
    if title and link:
-    s,cves=score(title+' '+desc,w);out.append((link.strip(),title,link,name,pub,s,cves,desc))
+    s,cves=score(title+' '+desc,w)
+    out.append((link.strip(),title,link.strip(),tab,pub,s,cves,desc))
   return out
- except Exception as ex:print('Feed failure',name,str(ex)[:200]);return []
+ except Exception as ex:
+  print('Feed failure',name,str(ex)[:200]);return []
 def kev_feed():
  try:
   data=json.loads(fetch('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'));out=[]
