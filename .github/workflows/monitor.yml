@@ -1,0 +1,35 @@
+name: Cyber Watch AI Cloud Agent
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: cyber-watch-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Python setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run collector
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_MIN_SCORE: '8'
+        run: python watch.py
+      - name: Persist dashboard and state
+        run: |
+          git config user.name 'Cyber Watch AI Bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/index.html state.db
+          git commit -m 'Refresh threat intelligence and feed health' || echo 'No changes to commit'
+          git push
