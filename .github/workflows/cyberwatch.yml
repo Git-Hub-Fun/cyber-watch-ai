@@ -1,0 +1,37 @@
+name: Cyber Watch AI Monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cyberwatch-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Cyber Watch AI
+        run: python watch.py
+
+      - name: Save dashboard and database
+        run: |
+          git config user.name "Cyber Watch AI"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html state.db
+          git commit -m "Update threat intelligence" || echo "No changes"
+          git push
