@@ -10,21 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: state.db
-          key: cyber-watch-db-${{ github.run_id }}
-          restore-keys: cyber-watch-db-
       - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python watch.py
-      - name: Publish dashboard snapshot
+      - name: Persist dashboard and alert history
         run: |
           git config user.name 'Cyber Watch Bot'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add docs/index.html
-          git commit -m 'Update Cyber Watch dashboard' || true
-          git push || true
-
+          git add docs/index.html state.db
+          git commit -m 'Update Cyber Watch intelligence' || true
+          git push
