@@ -13,7 +13,7 @@ FEEDS=[
  ('Microsoft Security Blog','Microsoft Security Blog','https://www.microsoft.com/en-us/security/blog/feed/',4),
  ('Cisco Security','Cisco Security','https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml',4),
  ('Exploit-DB','Exploit-DB','https://www.exploit-db.com/rss.xml',4),
- ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/','3'),
+ ('Packet Storm','Packet Storm','https://packetstormsecurity.com/feeds/news.xml',3),
  ('NVD','NVD CVE feed','https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss.xml',5),
 ]
 CRIT=['actively exploited','zero-day','zero day','0-day','remote code execution','rce','critical','known exploited','ransomware']
@@ -30,8 +30,22 @@ def fetch(url,timeout=20):
 def init():
  db=sqlite3.connect(DB); db.execute('CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY,title TEXT,url TEXT,source TEXT,published TEXT,score INTEGER,cves TEXT,summary TEXT)');db.commit();return db
 def parse_feed(tab,name,url,w):
+ # Feed endpoint fallbacks for providers that move, redirect, or serve Atom instead of RSS.
+ alternates={
+  'CISA':['https://www.cisa.gov/news-events/cybersecurity-advisories.xml','https://www.cisa.gov/cybersecurity-advisories/all.xml'],
+  'Google Security Blog':['https://security.googleblog.com/feeds/posts/default?alt=rss','https://security.googleblog.com/feeds/posts/default'],
+  'Microsoft Security Blog':['https://www.microsoft.com/en-us/security/blog/feed/','https://blogs.microsoft.com/blog/tag/security/feed/'],
+  'Packet Storm':['https://packetstormsecurity.com/feeds/news.xml','https://packetstormsecurity.com/feeds/'],
+ }
+ urls=list(dict.fromkeys([url]+alternates.get(tab,[])))
  try:
-  root=ET.fromstring(fetch(url)); entries=[e for e in root.iter() if e.tag.split('}')[-1].lower() in ('item','entry')]; out=[]
+  root=None; used=None; last_error=None
+  for candidate in urls:
+   try:
+    root=ET.fromstring(fetch(candidate));used=candidate;break
+   except Exception as ex:last_error=ex
+  if root is None: raise last_error or Exception('No feed URL succeeded')
+  entries=[e for e in root.iter() if e.tag.split('}')[-1].lower() in ('item','entry')]; out=[]
   for e in entries[:80]:
    def get(*tags):
     # Only inspect direct entry children, avoiding nested content accidentally matching fields.
@@ -62,7 +76,7 @@ def parse_feed(tab,name,url,w):
    pub=get('pubDate','published','updated','date')
    if title and link:
     s,cves=score(title+' '+desc,w);out.append((link.strip(),title,link.strip(),tab,pub,s,cves,desc))
-  print(f'Feed OK: {name} — {len(out)} entries')
+  print(f'Feed OK: {name} — {len(out)} entries ({used})')
   return out
  except Exception as ex:print('Feed failure',name,str(ex)[:200]);return []
 
